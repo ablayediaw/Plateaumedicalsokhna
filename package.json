@@ -1,0 +1,14 @@
+{
+  "name": "plateau-medical-sokhna",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "node -c server.js && node -c lib/auth.js && node -c lib/clinic-store.js && node -c assets/pms/admin-setup.js",
+    "lint": "node -c server.js && node -c lib/auth.js && node -c lib/clinic-store.js && node -c assets/pms/admin-setup.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
+  }
+}
