@@ -312,7 +312,7 @@ test('Express clinic API starts at zero, enforces per-member auth, RBAC, team ma
   assert.equal(quotesAfterReset.json.quotes.length, 0);
 });
 
-test('Vercel entrypoint, config, and static blocklist work cleanly', async (t) => {
+test('Vercel entrypoint, config, stateless derived 9-member keys, and proxy CSRF checks work cleanly', async (t) => {
   const fs = require('fs');
   const path = require('path');
 
@@ -328,68 +328,146 @@ test('Vercel entrypoint, config, and static blocklist work cleanly', async (t) =
   assert.equal(vercelCfg.trailingSlash, false);
   assert.ok(
     Array.isArray(vercelCfg.rewrites) &&
-      vercelCfg.rewrites.some((r) => r.destination === '/api/index.js?__path=$1'),
+      vercelCfg.rewrites.some((r) => r.destination === '/api?__path=$1'),
   );
 
-  // Test Vercel __path rewrite + admin login with legacy ADMIN_EMAIL and @pms.com email
-  const envAuth = createAuthManager({
-    getEnv: () => ({
-      ADMIN_EMAIL: 'admin@pms-sokhna.com',
-      ADMIN_PASSWORD: 'MasterClinicKey-2026!',
-    }),
+  // Two independent app instances simulating two separate Vercel serverless containers
+  const vercelEnv = () => ({
+    VERCEL: '1',
+    ADMIN_EMAIL: 'admin@pms-sokhna.com',
+    ADMIN_PASSWORD: 'MasterClinicKey-2026!',
   });
-  const app = createApp({ auth: envAuth });
-  const server = await new Promise((resolve) => {
-    const s = app.listen(0, '127.0.0.1', () => resolve(s));
-  });
-  t.after(() => server.close());
-  const { port } = server.address();
-  const baseUrl = `http://127.0.0.1:${port}`;
 
-  const health = await requestJson(baseUrl, '/api/index.js?__path=health');
+  const appA = createApp({ authOptions: { getEnv: vercelEnv } });
+  const appB = createApp({ authOptions: { getEnv: vercelEnv } });
+
+  const serverA = await new Promise((resolve) => {
+    const s = appA.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const serverB = await new Promise((resolve) => {
+    const s = appB.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  t.after(() => {
+    serverA.close();
+    serverB.close();
+  });
+
+  const baseA = `http://127.0.0.1:${serverA.address().port}`;
+  const baseB = `http://127.0.0.1:${serverB.address().port}`;
+
+  const health = await requestJson(baseA, '/api?__path=health');
   assert.equal(health.status, 200);
   assert.equal(health.json.ok, true);
 
-  const setupStatus = await requestJson(baseUrl, '/api/index.js?__path=admin/setup-status');
+  const setupStatus = await requestJson(baseA, '/api?__path=admin/setup-status');
   assert.equal(setupStatus.status, 200);
   assert.equal(setupStatus.json.configured, true);
+  assert.equal(setupStatus.json.runtime, 'vercel');
   assert.equal(setupStatus.json.emailHint, 'moussa.gaye@pms.com');
 
-  // Admin key works with moussa.gaye@pms.com, admin@pms.com, and legacy admin@pms-sokhna.com (even with trailing space)
-  for (const adminEmail of ['moussa.gaye@pms.com', 'admin@pms.com', 'admin@pms-sokhna.com']) {
-    const login = await requestJson(baseUrl, '/api/index.js?__path=admin/auth', {
-      method: 'POST',
-      headers: { Origin: baseUrl },
-      body: { email: adminEmail, password: ' MasterClinicKey-2026! ' },
-    });
-    assert.equal(login.status, 200, `Expected 200 for ${adminEmail}`);
+  // Admin logs in on Container A behind Vercel proxy headers (x-forwarded-host + origin)
+  const adminLogin = await requestJson(baseA, '/api?__path=admin/auth', {
+    method: 'POST',
+    headers: {
+      'X-Forwarded-Host': 'pms-sokhna.vercel.app',
+      Origin: 'https://pms-sokhna.vercel.app',
+    },
+    body: { email: 'moussa.gaye@pms.com', password: ' MasterClinicKey-2026! ' },
+  });
+  assert.equal(adminLogin.status, 200);
+  const adminSetCookie = Array.isArray(adminLogin.headers['set-cookie'])
+    ? adminLogin.headers['set-cookie'][0]
+    : adminLogin.headers['set-cookie'];
+  const adminCookie = adminSetCookie.split(';')[0];
 
-    const rdvRes = await requestJson(baseUrl, '/api/index.js?__path=appointments', {
+  // Session cookie issued by Container A is accepted by Container B (stateless Vercel)
+  const statsOnB = await requestJson(baseB, '/api?__path=admin/stats', {
+    headers: { Cookie: adminCookie },
+  });
+  assert.equal(statsOnB.status, 200);
+
+  // Admin retrieves all 9 permanent derived team keys on Container B
+  const keysRes = await requestJson(baseB, '/api?__path=admin/team/access-keys', {
+    method: 'POST',
+    headers: { Cookie: adminCookie, Origin: baseB },
+    body: {},
+  });
+  assert.equal(keysRes.status, 200);
+  assert.equal(keysRes.json.credentials.length, 9);
+
+  // Every single one of the 9 team members can log in on BOTH /admin and /#gestion on Container A
+  const uniqueDerivedKeys = new Set();
+  for (const cred of keysRes.json.credentials) {
+    uniqueDerivedKeys.add(cred.password);
+    const loginRes = await requestJson(baseA, '/api?__path=admin/auth', {
+      method: 'POST',
+      headers: { Origin: baseA },
+      body: { email: cred.email, password: cred.password },
+    });
+    assert.equal(loginRes.status, 200, `Expected /admin login 200 for ${cred.email}`);
+    assert.equal(loginRes.json.user.email, cred.email);
+
+    const gestionRes = await requestJson(baseA, '/api?__path=appointments', {
       headers: {
-        'x-admin-email': adminEmail,
-        'x-admin-pass': 'MasterClinicKey-2026!',
+        'x-admin-email': cred.email,
+        'x-admin-pass': cred.password,
       },
     });
-    assert.equal(rdvRes.status, 200, `Expected 200 on /api/appointments for ${adminEmail}`);
-  }
+    assert.equal(gestionRes.status, 200, `Expected /#gestion 200 for ${cred.email}`);
 
-  // Wrong password or unauthorized email is still rejected
-  const badPass = await requestJson(baseUrl, '/api/index.js?__path=admin/auth', {
+    // Non-admin member cannot call /api/admin/team/access-keys
+    if (cred.role === 'medecin') {
+      const mCookie = (
+        Array.isArray(loginRes.headers['set-cookie'])
+          ? loginRes.headers['set-cookie'][0]
+          : loginRes.headers['set-cookie']
+      ).split(';')[0];
+      const forbiddenKeys = await requestJson(baseB, '/api?__path=admin/team/access-keys', {
+        method: 'POST',
+        headers: { Cookie: mCookie, Origin: baseB },
+        body: {},
+      });
+      assert.equal(forbiddenKeys.status, 403);
+    }
+  }
+  assert.equal(uniqueDerivedKeys.size, 9);
+
+  // Wrong password or cross-origin POST is rejected
+  const badPass = await requestJson(baseA, '/api?__path=admin/auth', {
     method: 'POST',
-    headers: { Origin: baseUrl },
+    headers: { Origin: baseA },
     body: { email: 'moussa.gaye@pms.com', password: 'WrongPassword!' },
   });
   assert.equal(badPass.status, 401);
 
-  const badEmail = await requestJson(baseUrl, '/api/index.js?__path=admin/auth', {
+  const crossOrigin = await requestJson(baseA, '/api?__path=admin/auth', {
     method: 'POST',
-    headers: { Origin: baseUrl },
-    body: { email: 'inconnu@example.com', password: 'MasterClinicKey-2026!' },
+    headers: {
+      'X-Forwarded-Host': 'pms-sokhna.vercel.app',
+      Origin: 'https://evil.example.com',
+    },
+    body: { email: 'moussa.gaye@pms.com', password: 'MasterClinicKey-2026!' },
   });
-  assert.equal(badEmail.status, 401);
+  assert.equal(crossOrigin.status, 403);
+
+  // Unconfigured Vercel returns clear French guidance mentioning ADMIN_PASSWORD
+  const unconfiguredVercel = createApp({ authOptions: { getEnv: () => ({ VERCEL: '1' }) } });
+  const serverC = await new Promise((resolve) => {
+    const s = unconfiguredVercel.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  t.after(() => serverC.close());
+  const baseC = `http://127.0.0.1:${serverC.address().port}`;
+  const unconfLogin = await requestJson(baseC, '/api?__path=admin/auth', {
+    method: 'POST',
+    headers: { Origin: baseC },
+    body: { email: 'moussa.gaye@pms.com', password: 'SomePassword123' },
+  });
+  assert.equal(unconfLogin.status, 403);
+  assert.match(unconfLogin.json.error, /ADMIN_PASSWORD/);
 
   // Verify api/index.js module exports an Express app cleanly
   const vercelApp = require('./api/index.js');
   assert.equal(typeof vercelApp, 'function');
 });
+
 

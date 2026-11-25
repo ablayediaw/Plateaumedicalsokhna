@@ -62,15 +62,26 @@ function createApp(options = {}) {
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
 
-  // Restore original /api/* path when invoked via Vercel rewrite (/api/index.js?__path=...)
+  // Restore original /api/* path when invoked via Vercel rewrite (/api?__path=... or /api/index.js?__path=...)
   app.use((req, _res, next) => {
     try {
       const parsed = new URL(req.url || '/', 'http://localhost');
-      const rewrittenPath = parsed.searchParams.get('__path');
+      let rewrittenPath = parsed.searchParams.get('__path');
+      if (
+        rewrittenPath === null &&
+        req.query &&
+        typeof req.query.__path === 'string' &&
+        (parsed.pathname === '/api' ||
+          parsed.pathname === '/api/' ||
+          parsed.pathname === '/api/index' ||
+          parsed.pathname === '/api/index.js')
+      ) {
+        rewrittenPath = req.query.__path;
+      }
       if (rewrittenPath !== null) {
         parsed.searchParams.delete('__path');
         const qs = parsed.searchParams.toString();
-        const cleanPath = rewrittenPath.replace(/^\/+/, '');
+        const cleanPath = String(rewrittenPath).replace(/^\/+/, '');
         req.url = `/api/${cleanPath}${qs ? `?${qs}` : ''}`;
       }
     } catch {
@@ -81,8 +92,36 @@ function createApp(options = {}) {
 
   const jsonParser = express.json({ limit: '100kb' });
   app.use((req, res, next) => {
-    if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
-      return next();
+    if (req.body !== undefined) {
+      if (typeof req.body === 'string') {
+        const trimmed = req.body.trim();
+        if (trimmed && Buffer.byteLength(trimmed, 'utf8') <= 102400) {
+          try {
+            req.body = JSON.parse(trimmed);
+          } catch {
+            return res.status(400).json({ error: 'Corps JSON invalide.' });
+          }
+        } else {
+          req.body = {};
+        }
+        return next();
+      }
+      if (Buffer.isBuffer(req.body)) {
+        const str = req.body.toString('utf8').trim();
+        if (str && req.body.length <= 102400) {
+          try {
+            req.body = JSON.parse(str);
+          } catch {
+            return res.status(400).json({ error: 'Corps JSON invalide.' });
+          }
+        } else {
+          req.body = {};
+        }
+        return next();
+      }
+      if (typeof req.body === 'object' && req.body !== null) {
+        return next();
+      }
     }
     return jsonParser(req, res, next);
   });
@@ -212,8 +251,12 @@ function createApp(options = {}) {
     const status = auth.getSetupStatus();
     if (!status.configured) {
       return res.status(403).json({
-        error: 'Aucun accès configuré. Utilisez le formulaire de première configuration.',
+        error:
+          status.runtime === 'vercel'
+            ? 'Variable ADMIN_PASSWORD non configurée sur Vercel. Ajoutez ADMIN_PASSWORD dans Vercel → Settings → Environment Variables puis redéployez.'
+            : 'Aucun accès configuré. Utilisez le formulaire de première configuration.',
         setupRequired: true,
+        runtime: status.runtime,
       });
     }
 
@@ -262,6 +305,16 @@ function createApp(options = {}) {
     return res.status(201).json({
       member: result.member,
       password: result.password,
+    });
+  });
+
+  app.post('/api/admin/team/access-keys', requireAdminManager, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const status = auth.getSetupStatus();
+    return res.json({
+      source: status.source,
+      runtime: status.runtime,
+      credentials: auth.getActiveDerivedTeamCredentials(),
     });
   });
 

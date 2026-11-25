@@ -464,7 +464,7 @@
     overlay.appendChild(card);
   }
 
-  function renderSetupModal(emailHint, teamDirectory) {
+  function renderSetupModal(emailHint, teamDirectory, runtime) {
     if (document.getElementById(OVERLAY_ID)) return;
     ensureStyles();
 
@@ -499,6 +499,15 @@
       'pms-intro',
       'Choisissez votre compte administrateur et votre mot de passe personnel. L\'application générera ensuite automatiquement une clé d\'accès unique pour chaque membre de l\'équipe PMS SOKHNA.'
     );
+
+    var vercelNotice = null;
+    if (runtime === 'vercel') {
+      vercelNotice = createEl(
+        'p',
+        'pms-notice',
+        'Déploiement Vercel détecté : la variable ADMIN_PASSWORD n\'est pas encore définie sur Vercel. Pour que les 9 adresses @pms.com et leurs mots de passe restent actifs en permanence, ajoutez ADMIN_PASSWORD dans Vercel → Settings → Environment Variables, puis cliquez sur Redeploy.'
+      );
+    }
 
     var form = document.createElement('form');
     form.className = 'pms-form';
@@ -728,6 +737,7 @@
 
     card.appendChild(header);
     card.appendChild(intro);
+    if (vercelNotice) card.appendChild(vercelNotice);
     card.appendChild(form);
     overlay.appendChild(card);
     document.body.appendChild(overlay);
@@ -783,13 +793,17 @@
     card.appendChild(revealZone);
 
     var topBar = createEl('div', 'pms-actions-row');
-    var rotateBtn = createEl('button', 'pms-btn-primary', 'Générer de nouvelles clés pour l\'équipe');
+    var showKeysBtn = createEl('button', 'pms-btn-primary', 'Voir les 9 clés actives de l\'équipe');
+    showKeysBtn.type = 'button';
+
+    var rotateBtn = createEl('button', 'pms-btn-secondary', 'Générer de nouvelles clés');
     rotateBtn.type = 'button';
 
     var resetDashBtn = createEl('button', 'pms-btn-danger', 'Remettre le tableau de bord à zéro');
     resetDashBtn.type = 'button';
     resetDashBtn.style.marginLeft = 'auto';
 
+    topBar.appendChild(showKeysBtn);
     topBar.appendChild(rotateBtn);
     topBar.appendChild(resetDashBtn);
     card.appendChild(topBar);
@@ -999,6 +1013,45 @@
           showBanner('Erreur de connexion.', true);
         });
     }
+
+    showKeysBtn.addEventListener('click', function () {
+      showKeysBtn.disabled = true;
+      fetch('/api/admin/team/access-keys', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: getAdminRequestHeaders(true),
+        body: JSON.stringify({}),
+      })
+        .then(function (r) {
+          return r.json().then(function (d) {
+            return { ok: r.ok, data: d };
+          });
+        })
+        .then(function (res) {
+          showKeysBtn.disabled = false;
+          if (!res.ok) {
+            showBanner(res.data.error || 'Impossible de récupérer les clés actives.', true);
+            return;
+          }
+          var list = res.data.credentials || [];
+          if (list.length === 0) {
+            showBanner(
+              'Configurez ADMIN_PASSWORD dans les variables d\'environnement pour activer les 9 clés permanentes, ou cliquez sur « Générer de nouvelles clés ».',
+              true
+            );
+            return;
+          }
+          showBanner(list.length + ' accès individuels permanents actifs.', false);
+          showRevealedCredentials(
+            list,
+            'Chaque membre ci-dessous peut se connecter avec son adresse @pms.com et sa clé personnelle :'
+          );
+        })
+        .catch(function () {
+          showKeysBtn.disabled = false;
+          showBanner('Erreur réseau.', true);
+        });
+    });
 
     rotateBtn.addEventListener('click', function () {
       rotateBtn.disabled = true;
@@ -1265,7 +1318,7 @@
           replaceStaleAdminDemoHint(lastEmailHint);
         }
         if (data && data.configured === false && isTargetView()) {
-          renderSetupModal(data.emailHint, data.teamDirectory);
+          renderSetupModal(data.emailHint, data.teamDirectory, data.runtime);
         } else {
           removeById(OVERLAY_ID);
           scheduleTeamFabCheck();
