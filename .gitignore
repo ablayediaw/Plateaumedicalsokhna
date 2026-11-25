@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output (generated during build / Vercel deploy)
+public/
+.vercel/
+
+# Lockfile managed locally by Bun (Vercel & CI use npm install)
+bun.lock
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# AI Studio & temporary local artifacts
+.aistudio/
+.playwright-cli/
+*.log
+.DS_Store

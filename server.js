@@ -13,11 +13,16 @@ const BLOCKED_TOP_LEVEL = new Set([
   'server.test.js',
   'package.json',
   'package-lock.json',
+  'bun.lock',
+  'vercel.json',
   'metadata.json',
   'node_modules',
   'workspace',
   'readme.md',
   'lib',
+  'api',
+  'scripts',
+  'public',
 ]);
 
 function isBlockedPath(requestPath) {
@@ -132,7 +137,12 @@ function createApp(options = {}) {
     return next();
   }
 
-  // --- First-run admin setup routes ---
+  // --- Health & first-run admin setup routes ---
+  app.get('/api/health', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ ok: true });
+  });
+
   app.get('/api/admin/setup-status', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json(auth.getSetupStatus());

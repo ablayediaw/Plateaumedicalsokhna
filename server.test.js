@@ -311,3 +311,37 @@ test('Express clinic API starts at zero, enforces per-member auth, RBAC, team ma
   assert.equal(quotesAfterReset.status, 200);
   assert.equal(quotesAfterReset.json.quotes.length, 0);
 });
+
+test('Vercel entrypoint, config, and static blocklist work cleanly', async (t) => {
+  const fs = require('fs');
+  const path = require('path');
+
+  for (const blocked of ['/vercel.json', '/api/index.js', '/scripts/build.js', '/public/index.html', '/bun.lock']) {
+    assert.equal(isBlockedPath(blocked), true, `Expected ${blocked} to be blocked`);
+  }
+
+  const vercelCfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'vercel.json'), 'utf8'));
+  assert.equal(vercelCfg.outputDirectory, 'public');
+  assert.equal(vercelCfg.buildCommand, 'npm run build');
+  assert.equal(vercelCfg.installCommand, 'npm install');
+  assert.equal(vercelCfg.cleanUrls, true);
+  assert.equal(vercelCfg.trailingSlash, false);
+  assert.ok(Array.isArray(vercelCfg.rewrites) && vercelCfg.rewrites.some((r) => r.destination === '/api/index.js'));
+
+  const vercelApp = require('./api/index.js');
+  const server = await new Promise((resolve) => {
+    const s = vercelApp.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  t.after(() => server.close());
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const health = await requestJson(baseUrl, '/api/health');
+  assert.equal(health.status, 200);
+  assert.equal(health.json.ok, true);
+
+  const setupStatus = await requestJson(baseUrl, '/api/admin/setup-status');
+  assert.equal(setupStatus.status, 200);
+  assert.equal(typeof setupStatus.json.configured, 'boolean');
+});
+
