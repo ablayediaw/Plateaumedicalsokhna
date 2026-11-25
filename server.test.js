@@ -326,22 +326,70 @@ test('Vercel entrypoint, config, and static blocklist work cleanly', async (t) =
   assert.equal(vercelCfg.installCommand, 'npm install');
   assert.equal(vercelCfg.cleanUrls, true);
   assert.equal(vercelCfg.trailingSlash, false);
-  assert.ok(Array.isArray(vercelCfg.rewrites) && vercelCfg.rewrites.some((r) => r.destination === '/api/index.js'));
+  assert.ok(
+    Array.isArray(vercelCfg.rewrites) &&
+      vercelCfg.rewrites.some((r) => r.destination === '/api/index.js?__path=$1'),
+  );
 
-  const vercelApp = require('./api/index.js');
+  // Test Vercel __path rewrite + admin login with legacy ADMIN_EMAIL and @pms.com email
+  const envAuth = createAuthManager({
+    getEnv: () => ({
+      ADMIN_EMAIL: 'admin@pms-sokhna.com',
+      ADMIN_PASSWORD: 'MasterClinicKey-2026!',
+    }),
+  });
+  const app = createApp({ auth: envAuth });
   const server = await new Promise((resolve) => {
-    const s = vercelApp.listen(0, '127.0.0.1', () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   t.after(() => server.close());
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
 
-  const health = await requestJson(baseUrl, '/api/health');
+  const health = await requestJson(baseUrl, '/api/index.js?__path=health');
   assert.equal(health.status, 200);
   assert.equal(health.json.ok, true);
 
-  const setupStatus = await requestJson(baseUrl, '/api/admin/setup-status');
+  const setupStatus = await requestJson(baseUrl, '/api/index.js?__path=admin/setup-status');
   assert.equal(setupStatus.status, 200);
-  assert.equal(typeof setupStatus.json.configured, 'boolean');
+  assert.equal(setupStatus.json.configured, true);
+  assert.equal(setupStatus.json.emailHint, 'moussa.gaye@pms.com');
+
+  // Admin key works with moussa.gaye@pms.com, admin@pms.com, and legacy admin@pms-sokhna.com (even with trailing space)
+  for (const adminEmail of ['moussa.gaye@pms.com', 'admin@pms.com', 'admin@pms-sokhna.com']) {
+    const login = await requestJson(baseUrl, '/api/index.js?__path=admin/auth', {
+      method: 'POST',
+      headers: { Origin: baseUrl },
+      body: { email: adminEmail, password: ' MasterClinicKey-2026! ' },
+    });
+    assert.equal(login.status, 200, `Expected 200 for ${adminEmail}`);
+
+    const rdvRes = await requestJson(baseUrl, '/api/index.js?__path=appointments', {
+      headers: {
+        'x-admin-email': adminEmail,
+        'x-admin-pass': 'MasterClinicKey-2026!',
+      },
+    });
+    assert.equal(rdvRes.status, 200, `Expected 200 on /api/appointments for ${adminEmail}`);
+  }
+
+  // Wrong password or unauthorized email is still rejected
+  const badPass = await requestJson(baseUrl, '/api/index.js?__path=admin/auth', {
+    method: 'POST',
+    headers: { Origin: baseUrl },
+    body: { email: 'moussa.gaye@pms.com', password: 'WrongPassword!' },
+  });
+  assert.equal(badPass.status, 401);
+
+  const badEmail = await requestJson(baseUrl, '/api/index.js?__path=admin/auth', {
+    method: 'POST',
+    headers: { Origin: baseUrl },
+    body: { email: 'inconnu@example.com', password: 'MasterClinicKey-2026!' },
+  });
+  assert.equal(badEmail.status, 401);
+
+  // Verify api/index.js module exports an Express app cleanly
+  const vercelApp = require('./api/index.js');
+  assert.equal(typeof vercelApp, 'function');
 });
 

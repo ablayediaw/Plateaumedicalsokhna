@@ -61,7 +61,31 @@ function createApp(options = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '100kb' }));
+
+  // Restore original /api/* path when invoked via Vercel rewrite (/api/index.js?__path=...)
+  app.use((req, _res, next) => {
+    try {
+      const parsed = new URL(req.url || '/', 'http://localhost');
+      const rewrittenPath = parsed.searchParams.get('__path');
+      if (rewrittenPath !== null) {
+        parsed.searchParams.delete('__path');
+        const qs = parsed.searchParams.toString();
+        const cleanPath = rewrittenPath.replace(/^\/+/, '');
+        req.url = `/api/${cleanPath}${qs ? `?${qs}` : ''}`;
+      }
+    } catch {
+      // Ignore malformed URLs and let Express handle them normally
+    }
+    return next();
+  });
+
+  const jsonParser = express.json({ limit: '100kb' });
+  app.use((req, res, next) => {
+    if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+      return next();
+    }
+    return jsonParser(req, res, next);
+  });
 
   const notFoundPage = path.join(rootDir, '404.html');
 
