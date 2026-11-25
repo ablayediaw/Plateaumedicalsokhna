@@ -7,6 +7,10 @@
   var STYLE_ID = 'pms-first-run-setup-styles';
   var checking = false;
   var fabTimer = null;
+  var isInternalReload = false;
+  var lastMainScrollY = 0;
+  var previousHash = window.location.hash || '';
+  var savedReturnPosition = { optique: null, gestion: null };
 
   var ROLE_LABELS = {
     super_admin: 'Super admin',
@@ -444,7 +448,7 @@
     enterBtn.addEventListener('click', function () {
       removeById(OVERLAY_ID);
       if (isAdminRoute()) {
-        window.location.reload();
+        safeReload();
       } else {
         window.setTimeout(function () {
           submitGestionForm(primaryEmail, primaryPassword);
@@ -618,9 +622,12 @@
     cancelBtn.addEventListener('click', function () {
       removeById(OVERLAY_ID);
       if (isAdminRoute()) {
-        window.location.href = '/';
+        isInternalReload = true;
+        logoutClinicImmediately().finally(function () {
+          window.location.href = '/';
+        });
       } else {
-        window.location.hash = '#accueil';
+        closeSpace('gestion');
       }
     });
 
@@ -704,7 +711,7 @@
           } else {
             removeById(OVERLAY_ID);
             if (isAdminRoute()) {
-              window.location.reload();
+              safeReload();
             } else {
               window.setTimeout(function () {
                 submitGestionForm(email, password);
@@ -1061,7 +1068,7 @@
           showBanner('Tableau de bord remis à zéro : tous les RDV, devis et ordonnances ont été supprimés.', false);
           if (isAdminRoute()) {
             window.setTimeout(function () {
-              window.location.reload();
+              safeReload();
             }, 900);
           }
         })
@@ -1270,15 +1277,245 @@
       });
   }
 
-  window.addEventListener('hashchange', checkSetupState);
+  function safeReload() {
+    isInternalReload = true;
+    window.location.reload();
+  }
+
+  function logoutClinicImmediately() {
+    try {
+      window.sessionStorage.removeItem('pms-admin-pass');
+      window.sessionStorage.removeItem('pms-admin-email');
+    } catch (_e) {}
+    removeById(TEAM_FAB_ID);
+    removeById(TEAM_MODAL_ID);
+    removeById(OVERLAY_ID);
+
+    try {
+      return fetch('/api/admin/auth', {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        keepalive: true,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      }).catch(function () {});
+    } catch (_e) {
+      return Promise.resolve();
+    }
+  }
+
+  function recordScrollIfMainView() {
+    if (isAdminRoute()) return;
+    var h = window.location.hash || '';
+    if (h !== '#optique' && h !== '#gestion') {
+      lastMainScrollY = window.scrollY || window.pageYOffset || 0;
+    }
+  }
+
+  function saveEntryContext(space) {
+    if (isAdminRoute()) return;
+    var currentY = window.scrollY || window.pageYOffset || lastMainScrollY || 0;
+    savedReturnPosition[space] = {
+      scrollY: currentY,
+      fromPage: true,
+      ts: Date.now(),
+    };
+  }
+
+  function getTargetSectionForSpace(space) {
+    if (space === 'optique') {
+      var optLink = document.querySelector('main a[href="#optique"]');
+      return optLink ? optLink.closest('section') || optLink : null;
+    }
+    if (space === 'gestion') {
+      var gestLink = document.querySelector('footer a[href="#gestion"]');
+      return gestLink ? gestLink.closest('footer') || gestLink : document.querySelector('footer');
+    }
+    return null;
+  }
+
+  function jumpScrollY(y) {
+    try {
+      window.scrollTo({ top: y, left: 0, behavior: 'instant' });
+    } catch (_e) {
+      window.scrollTo(0, y);
+    }
+  }
+
+  function restoreSpaceScroll(space, saved) {
+    if (isAdminRoute()) return;
+    if (saved && saved.fromPage && saved.scrollY >= 40) {
+      jumpScrollY(saved.scrollY);
+      return;
+    }
+    var section = getTargetSectionForSpace(space);
+    if (section) {
+      var rect = section.getBoundingClientRect();
+      var headerOffset = space === 'optique' ? 76 : 0;
+      var baseY = window.scrollY || window.pageYOffset || 0;
+      var targetTop = Math.max(0, Math.round(rect.top + baseY - headerOffset));
+      jumpScrollY(targetTop);
+    }
+  }
+
+  function closeSpace(space) {
+    if (space === 'gestion') {
+      logoutClinicImmediately();
+    }
+    var saved = savedReturnPosition[space];
+    savedReturnPosition[space] = null;
+
+    try {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    } catch (_e) {}
+
+    previousHash = '';
+    try {
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    } catch (_e) {
+      window.dispatchEvent(new Event('hashchange'));
+    }
+
+    restoreSpaceScroll(space, saved);
+    window.requestAnimationFrame(function () {
+      restoreSpaceScroll(space, saved);
+    });
+    window.setTimeout(function () {
+      restoreSpaceScroll(space, saved);
+    }, 60);
+  }
+
+  try {
+    window.__pmsCloseSpace = closeSpace;
+    window.__pmsLogoutClinic = logoutClinicImmediately;
+  } catch (_e) {}
+
+  function handleHashChange() {
+    var nextHash = window.location.hash || '';
+    var prev = previousHash;
+    previousHash = nextHash;
+
+    if (!isAdminRoute()) {
+      if (nextHash === '#optique' || nextHash === '#gestion') {
+        var sp = nextHash.slice(1);
+        var existing = savedReturnPosition[sp];
+        if (!existing || Date.now() - existing.ts > 800) {
+          savedReturnPosition[sp] = {
+            scrollY: lastMainScrollY,
+            fromPage: lastMainScrollY > 0,
+            ts: Date.now(),
+          };
+        }
+      }
+
+      if (prev === '#gestion' && nextHash !== '#gestion') {
+        logoutClinicImmediately();
+        if (nextHash === '' || nextHash === '#accueil') {
+          var savedG = savedReturnPosition.gestion;
+          savedReturnPosition.gestion = null;
+          window.requestAnimationFrame(function () {
+            restoreSpaceScroll('gestion', savedG);
+          });
+        }
+      }
+
+      if (prev === '#optique' && nextHash !== '#optique') {
+        if (nextHash === '' || nextHash === '#accueil') {
+          var savedO = savedReturnPosition.optique;
+          savedReturnPosition.optique = null;
+          window.requestAnimationFrame(function () {
+            restoreSpaceScroll('optique', savedO);
+          });
+        }
+      }
+    }
+
+    checkSetupState();
+  }
+
+  function applyPendingReturnSection() {
+    if (isAdminRoute() || window.location.hash) return;
+    var pending = '';
+    try {
+      pending = window.sessionStorage.getItem('pms-return-section') || '';
+      if (pending) window.sessionStorage.removeItem('pms-return-section');
+    } catch (_e) {}
+    if (pending === 'gestion' || pending === 'optique') {
+      var run = function () {
+        restoreSpaceScroll(pending, null);
+      };
+      window.requestAnimationFrame(run);
+      window.setTimeout(run, 120);
+      window.setTimeout(run, 350);
+    }
+  }
+
+  window.addEventListener('scroll', recordScrollIfMainView, { passive: true });
+
+  document.addEventListener(
+    'click',
+    function (evt) {
+      var target = evt.target && evt.target.closest ? evt.target.closest('a[href]') : null;
+      if (!target) return;
+      var href = target.getAttribute('href') || '';
+
+      if (!isAdminRoute()) {
+        if (href === '#optique') {
+          saveEntryContext('optique');
+        } else if (href === '#gestion') {
+          saveEntryContext('gestion');
+        }
+        return;
+      }
+
+      // Leaving /admin via a site link (e.g., "Voir le site") -> log out immediately before navigating
+      var isRootSiteLink = href === '/' || href === './' || href === '/index.html';
+      if (
+        href &&
+        href.charAt(0) !== '#' &&
+        (isRootSiteLink || target.getAttribute('target') !== '_blank') &&
+        href !== '/admin' &&
+        href !== '/admin.html'
+      ) {
+        evt.preventDefault();
+        isInternalReload = true;
+        if (isRootSiteLink) {
+          try {
+            window.sessionStorage.setItem('pms-return-section', 'gestion');
+          } catch (_e) {}
+        }
+        var done = false;
+        var go = function () {
+          if (done) return;
+          done = true;
+          window.location.href = href;
+        };
+        window.setTimeout(go, 400);
+        logoutClinicImmediately().finally(go);
+      }
+    },
+    true
+  );
+
+  window.addEventListener('pagehide', function () {
+    if (isInternalReload) return;
+    if (isAdminRoute() || isGestionHash()) {
+      logoutClinicImmediately();
+    }
+  });
+
+  window.addEventListener('hashchange', handleHashChange);
   document.addEventListener('submit', function () {
     if (isTargetView()) {
       window.setTimeout(ensureTeamFab, 1000);
     }
   });
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', checkSetupState);
-  } else {
+  var onReady = function () {
     checkSetupState();
+    applyPendingReturnSection();
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', onReady);
+  } else {
+    onReady();
   }
 })();
