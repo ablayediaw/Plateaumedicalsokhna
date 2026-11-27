@@ -3,6 +3,12 @@ const path = require('path');
 const express = require('express');
 const { createAuthManager, isSameOriginMutation } = require('./lib/auth');
 const { createClinicStore } = require('./lib/clinic-store');
+const {
+  resolveSiteUrlFromRequest,
+  buildRobotsTxt,
+  buildSitemapXml,
+  applyRuntimeSeoToHtml,
+} = require('./lib/seo');
 
 const ROOT_DIR = __dirname;
 const PORT = Number(process.env.PORT) || 3000;
@@ -199,6 +205,32 @@ function createApp(options = {}) {
     req.adminUser = user;
     return next();
   }
+
+  // --- Dynamic SEO routes (robots.txt & sitemap.xml) ---
+  function sendDynamicRobots(req, res) {
+    const siteUrl = resolveSiteUrlFromRequest(req);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(buildRobotsTxt(siteUrl));
+  }
+
+  function sendDynamicSitemap(req, res) {
+    const siteUrl = resolveSiteUrlFromRequest(req);
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(buildSitemapXml(siteUrl));
+  }
+
+  app.get('/robots.txt', sendDynamicRobots);
+  app.get('/sitemap.xml', sendDynamicSitemap);
+  app.get('/api/__seo/robots.txt', sendDynamicRobots);
+  app.get('/api/__seo/sitemap.xml', sendDynamicSitemap);
+
+  // Prevent search engines from indexing private API and admin routes
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    return next();
+  });
 
   // --- Health & first-run admin setup routes ---
   app.get('/api/health', (_req, res) => {
@@ -496,7 +528,31 @@ function createApp(options = {}) {
     if (isBlockedPath(req.path)) {
       return sendNotFound(res);
     }
+    if (req.path === '/admin' || req.path === '/admin.html') {
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    }
     return next();
+  });
+
+  const indexPagePath = path.join(rootDir, 'index.html');
+  let cachedIndexHtml = null;
+  function getRawIndexHtml() {
+    if (cachedIndexHtml === null && fs.existsSync(indexPagePath)) {
+      cachedIndexHtml = fs.readFileSync(indexPagePath, 'utf8');
+    }
+    return cachedIndexHtml;
+  }
+
+  app.get(['/', '/index.html'], (req, res, next) => {
+    const rawHtml = getRawIndexHtml();
+    if (!rawHtml) return next();
+    const siteUrl = resolveSiteUrlFromRequest(req);
+    const rendered = applyRuntimeSeoToHtml(rawHtml, siteUrl, {
+      googleSiteVerification: process.env.GOOGLE_SITE_VERIFICATION,
+    });
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    return res.status(200).send(rendered);
   });
 
   app.use(

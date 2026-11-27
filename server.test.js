@@ -470,4 +470,86 @@ test('Vercel entrypoint, config, stateless derived 9-member keys, and proxy CSRF
   assert.equal(typeof vercelApp, 'function');
 });
 
+test('Local SEO (Dakar / Rufisque / Almadies 2): robots.txt, sitemap.xml, OpenGraph, canonical, JSON-LD, and noindex headers', async (t) => {
+  const { applyRuntimeSeoToHtml, buildRobotsTxt, buildSitemapXml } = require('./lib/seo');
+  const app = createApp({ authOptions: { getEnv: () => ({}) } });
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const proxyHeaders = {
+    'X-Forwarded-Host': 'pms-sokhna.vercel.app',
+    'X-Forwarded-Proto': 'https',
+  };
+
+  // 1. Dynamic robots.txt via direct route and Vercel rewrite route
+  for (const route of ['/robots.txt', '/api?__path=__seo/robots.txt']) {
+    const res = await requestJson(baseUrl, route, { headers: proxyHeaders });
+    assert.equal(res.status, 200);
+    assert.match(res.headers['content-type'], /text\/plain/);
+    assert.match(res.body, /Allow: \//);
+    assert.match(res.body, /Disallow: \/admin/);
+    assert.match(res.body, /Disallow: \/api\//);
+    assert.match(res.body, /Sitemap: https:\/\/pms-sokhna\.vercel\.app\/sitemap\.xml/);
+  }
+
+  // 2. Dynamic sitemap.xml via direct route and Vercel rewrite route
+  for (const route of ['/sitemap.xml', '/api?__path=__seo/sitemap.xml']) {
+    const res = await requestJson(baseUrl, route, { headers: proxyHeaders });
+    assert.equal(res.status, 200);
+    assert.match(res.headers['content-type'], /application\/xml/);
+    assert.match(res.body, /<loc>https:\/\/pms-sokhna\.vercel\.app\/<\/loc>/);
+    assert.match(res.body, /<image:loc>https:\/\/pms-sokhna\.vercel\.app\/assets\/pms\/equipe-fond2\.webp<\/image:loc>/);
+  }
+
+  // 3. Homepage renders complete local SEO head tags and valid Schema.org JSON-LD
+  const home = await requestJson(baseUrl, '/', { headers: proxyHeaders });
+  assert.equal(home.status, 200);
+  assert.match(home.body, /<title>Plateau Médical SOKHNA – Clinique Almadies 2, Rufisque Dakar<\/title>/);
+  assert.match(home.body, /<link rel="canonical" href="https:\/\/pms-sokhna\.vercel\.app\/"\/>/);
+  assert.match(home.body, /<meta property="og:url" content="https:\/\/pms-sokhna\.vercel\.app\/"\/>/);
+  assert.match(home.body, /<meta property="og:image" content="https:\/\/pms-sokhna\.vercel\.app\/assets\/pms\/equipe-fond2\.webp"\/>/);
+  assert.match(home.body, /<meta name="twitter:card" content="summary_large_image"\/>/);
+  assert.match(home.body, /<meta name="geo\.placename" content="Almadies 2, Rufisque, Dakar, Sénégal"\/>/);
+  assert.equal(home.body.includes('__PMS_SITE_ORIGIN__'), false);
+
+  const ldMatch = home.body.match(/<script type="application\/ld\+json" id="pms-structured-data">([\s\S]*?)<\/script>/);
+  assert.ok(ldMatch, 'Expected Schema.org JSON-LD script block');
+  const parsedLd = JSON.parse(ldMatch[1]);
+  assert.ok(Array.isArray(parsedLd['@graph']) && parsedLd['@graph'].length === 4);
+  const clinic = parsedLd['@graph'][0];
+  assert.equal(clinic.address.addressLocality, 'Rufisque');
+  assert.equal(clinic.address.addressRegion, 'Dakar');
+  assert.equal(clinic.geo.latitude, 14.7523476);
+  assert.equal(clinic.geo.longitude, -17.2837069);
+  assert.equal(clinic.url, 'https://pms-sokhna.vercel.app/');
+  assert.ok(clinic.availableService.length >= 16);
+  assert.ok(parsedLd['@graph'].some((n) => n['@type'] === 'Optician'));
+  assert.ok(parsedLd['@graph'].some((n) => n['@type'] === 'FAQPage' && n.mainEntity.length >= 5));
+
+  // 4. Private /admin and /api routes carry X-Robots-Tag: noindex, nofollow
+  const adminRes = await requestJson(baseUrl, '/admin');
+  assert.equal(adminRes.status, 200);
+  assert.equal(adminRes.headers['x-robots-tag'], 'noindex, nofollow');
+
+  const healthRes = await requestJson(baseUrl, '/api/health');
+  assert.equal(healthRes.status, 200);
+  assert.equal(healthRes.headers['x-robots-tag'], 'noindex, nofollow');
+
+  // 5. Optional Google verification tag accepts safe token and rejects malicious input
+  const safeHtml = applyRuntimeSeoToHtml('<head></head>', 'https://pms-sokhna.com', {
+    googleSiteVerification: 'abcDEF1234567890_xyz-99',
+  });
+  assert.match(safeHtml, /<meta name="google-site-verification" content="abcDEF1234567890_xyz-99"\/>/);
+
+  const unsafeHtml = applyRuntimeSeoToHtml('<head></head>', 'https://pms-sokhna.com', {
+    googleSiteVerification: '"><script>alert(1)</script>',
+  });
+  assert.equal(unsafeHtml.includes('google-site-verification'), false);
+  assert.match(buildRobotsTxt('https://pms-sokhna.com'), /Sitemap: https:\/\/pms-sokhna\.com\/sitemap\.xml/);
+  assert.match(buildSitemapXml('https://pms-sokhna.com'), /<loc>https:\/\/pms-sokhna\.com\/<\/loc>/);
+});
+
+
 

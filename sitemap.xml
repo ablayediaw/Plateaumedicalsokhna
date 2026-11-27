@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://plateau-medical-sokhna.vercel.app/</loc>
+    <lastmod>2026-11-27</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+    <image:image>
+      <image:loc>https://plateau-medical-sokhna.vercel.app/assets/pms/equipe-fond2.webp</image:loc>
+      <image:title>Équipe médicale du Plateau Médical SOKHNA à Almadies 2, Rufisque, Dakar</image:title>
+      <image:caption>Médecins, spécialistes et personnel soignant du Plateau Médical SOKHNA (Almadies 2, Rufisque, Dakar)</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://plateau-medical-sokhna.vercel.app/assets/pms/fondateur.webp</image:loc>
+      <image:title>Dr Moussa Gaye — Médecin radiologue et Fondateur du Plateau Médical SOKHNA</image:title>
+      <image:caption>Fondateur du Plateau Médical SOKHNA à Almadies 2, Rufisque, Dakar</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://plateau-medical-sokhna.vercel.app/assets/pms/icon-512.png</image:loc>
+      <image:title>Logo officiel Plateau Médical SOKHNA</image:title>
+      <image:caption>Plateau Médical SOKHNA — Clinique pluridisciplinaire 24h/24 à Almadies 2, Rufisque, Dakar</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://plateau-medical-sokhna.vercel.app/assets/pms/optique-logo.webp</image:loc>
+      <image:title>PMS Optique — Boutique de lunetterie médicale à Almadies 2, Rufisque, Dakar</image:title>
+      <image:caption>Boutique d’optique médicale intégrée au Plateau Médical SOKHNA</image:caption>
+    </image:image>
+  </url>
+</urlset>
